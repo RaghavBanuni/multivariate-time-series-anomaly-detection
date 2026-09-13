@@ -2,33 +2,36 @@
 
 A detector that emits one boolean per sample is not a monitoring system. At a five-minute cadence a
 six-hour fault produces 72 separate alarms, and an operator facing 72 notifications for one event will
-suppress the tag by lunchtime. Alarm flooding is the documented reason monitoring systems get disabled
-in practice (see the EEMUA 191 guidance on tolerable alarm rates), so the pipeline here is:
+suppress the tag by lunchtime. Alarm flooding is the documented reason monitoring systems get switched
+off in practice (see the EEMUA 191 guidance on tolerable alarm rates), so the pipeline here is:
 
     score  ->  threshold  ->  hysteresis + dwell time  ->  alarm events
 
-Three thresholding strategies, with their trade-offs stated rather than implied:
+Two thresholding strategies, with their trade-offs stated rather than implied.
 
 **Static quantile** of the clean training scores. Calibrated once, never moves. Correct when the
 process is stationary; produces a rising false-alarm rate as the plant ages, and every seasonal
 recalibration is a manual job.
 
 **Adaptive quantile** over a rolling window of recent scores. Absorbs slow baseline drift, which is
-what keeps the false-alarm rate flat over months. Its cost is severe and usually unstated: *a threshold
-that adapts will follow a slow fault and never fire*. A ramp is invisible to it by construction. This
-is not a bug to be fixed by tuning; it is the trade being made, and `python -m msad thresholds`
-demonstrates it on the injected drift.
+what keeps the false-alarm rate flat over months. Its cost is severe and usually unstated: a threshold
+that tracks recent scores also tracks a *slow fault*, and a drift whose rate is small compared with the
+score noise never crosses it. That is not a tuning failure to be fixed — it is what "adaptive" means,
+and the test suite pins it down as a property.
 
-**Alarming samples excluded from the adaptive baseline** (``exclude_alarms``). Without it, an ongoing
-fault feeds its own high scores into the window that judges it, the threshold climbs, and the alarm
-clears itself while the fault is still running — the same self-defeating calibration as taking the
-static quantile over the whole series instead of the training window.
+``exclude_alarms`` is the setting that stops the second, worse version of the same problem. Without it
+an ongoing fault feeds its own high scores into the window that judges it, the threshold climbs to meet
+them, and the alarm clears itself while the fault is still running. Excluding alarming samples freezes
+the baseline for the duration of the excursion instead, which is also what rescues the slow ramp: the
+baseline stops following the fault as soon as the fault becomes visible. Exclusion is suppressed during
+the first ``window // 4`` samples, because a rule that rejects samples before it has any baseline to
+judge them against would reject *everything* and never bootstrap.
 
 Hysteresis then separates the raise decision from the clear decision. A single threshold with a score
 hovering near it produces chatter; requiring ``min_duration`` consecutive exceedances to raise, and a
-drop below ``exit_ratio * threshold`` sustained for ``clear_duration`` to clear, produces one alarm per
-fault. That is also why ``min_duration`` is a form of noise filtering the *threshold* cannot provide:
-an isolated spurious sample never becomes an alarm.
+drop below ``exit_ratio * threshold`` sustained for ``clear_duration`` samples to clear, produces one
+alarm per fault. ``min_duration`` is also a form of noise rejection no threshold can provide: an
+isolated spurious sample never becomes an alarm.
 """
 
 from __future__ import annotations
@@ -78,7 +81,7 @@ class AdaptiveQuantileThreshold:
 
     ``floor`` keeps the threshold from collapsing during unusually quiet periods: a rolling quantile of
     a flat score series is itself flat, and then ordinary noise clears it. The floor is normally the
-    static training threshold, i.e. "never become more sensitive than the calibration said".
+    static training threshold — "never become more sensitive than the calibration said".
     """
 
     window: int = 576
@@ -87,10 +90,17 @@ class AdaptiveQuantileThreshold:
     floor: float = 0.0
     name: str = "adaptive"
 
+    @property
+    def warmup(self) -> int:
+        """Samples accepted unconditionally before ``exclude_alarms`` starts rejecting any."""
+        return max(2, self.window // 4)
+
     def series(self, scores: Sequence[float], valid_from: int = 0) -> list[float]:
         thresholds = [0.0] * len(scores)
         baseline: list[float] = []
         current = self.floor
+        warmup = self.warmup
+
         for index in range(len(scores)):
             if index < valid_from:
                 thresholds[index] = max(self.floor, current)
@@ -98,7 +108,9 @@ class AdaptiveQuantileThreshold:
             if len(baseline) >= 2:
                 current = max(self.floor, quantile(baseline[-self.window :], self.level))
             thresholds[index] = current
-            if not (self.exclude_alarms and scores[index] > current):
+
+            excluding = self.exclude_alarms and len(baseline) >= warmup
+            if not (excluding and scores[index] > current):
                 baseline.append(scores[index])
         return thresholds
 
@@ -161,7 +173,7 @@ class HysteresisPolicy:
                         blocked_until = index + self.cooldown
                         raised, run_start, run_length, below, peak = False, None, 0, 0, 0.0
                 else:
-                    below = 0  # still in the hysteresis band: neither firing nor clearing
+                    below = 0  # inside the hysteresis band: neither firing nor clearing
             else:
                 run_start, run_length, peak = None, 0, 0.0
 

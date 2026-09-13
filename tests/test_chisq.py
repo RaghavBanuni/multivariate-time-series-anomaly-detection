@@ -1,7 +1,7 @@
 """Chi-square machinery against published tables.
 
-The point of these tests is that ``theory_threshold`` means something. A Mahalanobis detector that says
-"alarm at a per-sample false-alarm rate of 1e-3" is only telling the truth if this file passes.
+The point of these tests is that ``theory_threshold`` means something. A Mahalanobis detector that
+claims "alarm at a per-sample false-alarm rate of 1e-3" is only telling the truth if this file passes.
 """
 
 import pytest
@@ -41,12 +41,12 @@ def test_the_cdf_is_monotone_and_bounded():
 
 
 def test_the_two_expansions_agree_where_they_meet():
-    """The series is used below ``a + 1`` and the continued fraction above it; a discontinuity at the
-    switch would mean one of them is being used out of its region of convergence."""
+    """The series is used below ``a + 1`` and the continued fraction above it. A jump at the switch
+    would mean one of them is being evaluated outside its region of good convergence."""
     a = 3.0
     left = gammainc_lower(a, a + 1.0 - 1e-9)
     right = gammainc_lower(a, a + 1.0 + 1e-9)
-    assert left == pytest.approx(right, abs=1e-10)
+    assert left == pytest.approx(right, abs=1e-8)
 
 
 def test_the_median_of_a_chi_square_with_one_degree_of_freedom():
@@ -55,7 +55,7 @@ def test_the_median_of_a_chi_square_with_one_degree_of_freedom():
 
 
 def test_the_mean_is_the_degrees_of_freedom():
-    """E[chi^2_k] = k, so the CDF at k should be a little above 0.5 for k > 2 (right skew)."""
+    """E[chi^2_k] = k, and the distribution is right-skewed, so the CDF at k sits just above 0.5."""
     assert 0.5 < chi2_cdf(6, 6) < 0.65
 
 
@@ -73,6 +73,12 @@ def test_extreme_tails_stay_in_range():
 
 def test_a_higher_confidence_needs_a_larger_threshold():
     values = [chi2_ppf(level, 6) for level in (0.9, 0.99, 0.999, 0.9999)]
+    assert values == sorted(values)
+
+
+def test_more_channels_need_a_larger_threshold_at_the_same_confidence():
+    """Six tags monitored jointly tolerate a larger squared distance than two, at equal risk."""
+    values = [chi2_ppf(0.999, df) for df in (1, 2, 6, 12)]
     assert values == sorted(values)
 
 

@@ -20,7 +20,6 @@ from .chisq import chi2_cdf, chi2_ppf
 from .detectors import (
     MahalanobisDetector,
     PCAReconstructionDetector,
-    RobustZScoreDetector,
     training_quantile_threshold,
 )
 from .evaluate import point_adjusted_f1, point_wise_f1, score_separation
@@ -94,9 +93,10 @@ def cmd_blindspots(args) -> None:
     print(
         "\nThe `correlation_break` row is the whole argument for multivariate monitoring. Discharge\n"
         "pressure is held near its normal daily average while the machine runs at high load: every\n"
-        "channel is inside its own range, so a per-channel detector has nothing to fire on, while the\n"
-        "reading sits tens of sigmas off the load line that the covariance and the PCA residual know\n"
-        "about. `stuck_sensor` is the same story with a frozen transmitter instead of a lost coupling."
+        "channel stays inside its own range, so a per-channel detector has nothing to fire on, while\n"
+        "the reading sits far off the load line that the covariance and the PCA residual know about.\n"
+        "`stuck_sensor` is the same story with a frozen transmitter instead of a lost coupling, and\n"
+        "`slow_drift` is hard for everything — which is stated rather than hidden."
     )
 
 
@@ -114,10 +114,10 @@ def cmd_thresholds(args) -> None:
         )
     print(
         "\nAn adaptive threshold is the right default for a plant that ages, and it is structurally\n"
-        "incapable of catching a slow ramp: the quantile it tracks rises with the fault. Excluding\n"
-        "alarming samples from the baseline stops an *ongoing* alarm from clearing itself, but nothing\n"
-        "rescues a drift that never crosses the moving line. Real deployments run both, which is why\n"
-        "both are here."
+        "weaker on a slow ramp: the quantile it tracks rises with the fault. Excluding alarming\n"
+        "samples from the baseline is what stops an ongoing alarm from clearing itself — and it is\n"
+        "also what stops the baseline from following a fault once the fault is visible. Real\n"
+        "deployments run both kinds of threshold, which is why both are implemented here."
     )
 
 
@@ -131,8 +131,10 @@ def cmd_chatter(args) -> None:
     thresholds = [threshold] * len(series)
     crossings = sum(exceedance_mask(series.scores, thresholds, dataset.train_end))
 
-    print(f"  chi-square threshold (p={1e-3:g}, df={detector.degrees_of_freedom}): "
-          f"{detector.theory_threshold(1e-3):.1f}")
+    print(
+        f"  chi-square threshold (p={1e-3:g}, df={detector.degrees_of_freedom}): "
+        f"{detector.theory_threshold(1e-3):.1f}"
+    )
     print(f"  empirical 99.9th percentile of clean training scores:  {threshold:.1f}")
     print(f"  shrinkage intensity chosen by Ledoit-Wolf:             {detector.intensity:.4f}")
     print(f"  Cholesky jitter required:                              {detector.jitter:.2e}")
@@ -153,10 +155,10 @@ def cmd_chatter(args) -> None:
         )
     print(
         "\nThe gap between the two thresholds is diagnostic in itself: the chi-square number assumes a\n"
-        "Gaussian baseline, the empirical one does not, and a large discrepancy means the assumption is\n"
-        "not holding. The alarm counts are why nobody ships raw per-sample exceedances: an operator who\n"
-        "receives dozens of notifications for one fault suppresses the tag, and then the detector's\n"
-        "quality stops mattering entirely."
+        "Gaussian baseline, the empirical one does not, and a large discrepancy means the assumption\n"
+        "is not holding. The alarm counts are why nobody ships raw per-sample exceedances: an operator\n"
+        "who receives dozens of notifications for one fault suppresses the tag, and then the quality\n"
+        "of the detector stops mattering at all."
     )
 
 
@@ -203,7 +205,7 @@ def cmd_math(args) -> None:
     print(f"  E[x^2]-E[x]^2      : {naive:.12e}")
     print(
         "  A bearing temperature near 340 K with 0.35 K of spread means the shortcut subtracts two\n"
-        "  numbers agreeing to six digits. It keeps a few significant digits of the answer at best."
+        "  numbers that agree to six digits. It keeps a few significant digits of the answer at best."
     )
 
     _heading("2. The MAD consistency constant")
@@ -214,7 +216,12 @@ def cmd_math(args) -> None:
     print(f"  unscaled MAD            = {mad(sample, scaled=False):.4f}   (0.6745 * 3 = 2.0235)")
 
     _heading("3. Chi-square quantiles vs published tables")
-    for level, df, published in ((0.95, 1, 3.8415), (0.99, 2, 9.2103), (0.95, 5, 11.0705), (0.99, 10, 23.2093)):
+    for level, df, published in (
+        (0.95, 1, 3.8415),
+        (0.99, 2, 9.2103),
+        (0.95, 5, 11.0705),
+        (0.99, 10, 23.2093),
+    ):
         computed = chi2_ppf(level, df)
         print(
             f"  chi2_ppf({level}, df={df:<2}) = {computed:9.4f}   table {published:9.4f}   "
@@ -229,9 +236,13 @@ def cmd_math(args) -> None:
     product = 1.0
     for value in eigen.values:
         product *= value
-    print(f"  determinant preserved: {product:.10f} vs 17.0")
+    # det = 4*(3*2 - 0) - 1*(1*2 - 0) + 1*(0 - 3) = 24 - 2 - 3 = 19
+    print(f"  determinant preserved: {product:.10f} vs 19.0")
     orthogonality = max(
-        abs(math.fsum(a * b for a, b in zip(eigen.vectors[i], eigen.vectors[j])) - (1.0 if i == j else 0.0))
+        abs(
+            math.fsum(a * b for a, b in zip(eigen.vectors[i], eigen.vectors[j]))
+            - (1.0 if i == j else 0.0)
+        )
         for i in range(3)
         for j in range(3)
     )
@@ -245,7 +256,10 @@ def cmd_math(args) -> None:
     print(f"  duplicated channel   : intensity {ledoit_wolf_intensity(duplicated):.4f}")
     print(f"  sample covariance of the duplicated pair: {covariance_matrix(duplicated)}")
     detector = MahalanobisDetector().fit(duplicated)
-    print(f"  Mahalanobis still factors: jitter {detector.jitter:.2e}, intensity {detector.intensity:.4f}")
+    print(
+        f"  Mahalanobis still factors: jitter {detector.jitter:.2e}, "
+        f"intensity {detector.intensity:.4f}"
+    )
     print(
         "  A mirrored historian tag makes the sample covariance singular. Without shrinkage the\n"
         "  inverse amplifies noise without bound and ordinary readings score as extreme outliers."

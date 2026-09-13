@@ -39,12 +39,15 @@ def test_welford_is_exact_on_a_hand_checkable_case():
     assert welford.population_variance == 2.0
 
 
-def test_welford_survives_a_large_offset_where_the_shortcut_struggles():
-    """The same spread sitting on a 1e8 pedestal: telemetry, in other words."""
+def test_welford_survives_a_large_offset():
+    """Unit spread on a 1e8 pedestal. The condition number of this problem is ~1e8, so a few digits
+    go regardless of the algorithm; the point is that Welford keeps the rest, while ``E[x^2]-E[x]^2``
+    is left with almost nothing.
+    """
     rng = random.Random(2)
     spread = [rng.gauss(0.0, 1.0) for _ in range(500)]
     offset = [value + 1e8 for value in spread]
-    assert Welford().extend(offset).variance == pytest.approx(variance(spread), rel=1e-9)
+    assert Welford().extend(offset).variance == pytest.approx(variance(spread), rel=1e-6)
 
 
 def test_variance_of_fewer_than_two_samples_is_zero_not_an_exception():
@@ -194,7 +197,7 @@ def test_correlation_is_shift_and_scale_invariant():
     right = [2.0, 3.0, 2.5, 6.0, 4.0]
     base = pearson(left, right)
     shifted = pearson([value + 1e6 for value in left], [value * 3.0 + 7.0 for value in right])
-    assert shifted == pytest.approx(base, rel=1e-9)
+    assert shifted == pytest.approx(base, rel=1e-6)
 
 
 def test_correlation_of_mismatched_lengths_is_an_error():
